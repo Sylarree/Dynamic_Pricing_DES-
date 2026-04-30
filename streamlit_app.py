@@ -114,6 +114,15 @@ state_scale = st.sidebar.slider(
 seed = st.sidebar.number_input("Random seed", min_value=0, max_value=99999, value=1)
 
 play_slider = st.sidebar.checkbox("Show moving point on phase plane", value=True)
+animate = st.sidebar.checkbox("Animate trajectory / time series", value=False)
+speed_label = st.sidebar.selectbox("Animation speed", ["slow", "medium", "fast"], index=1)
+
+speed_map = {
+    "slow": 0.20,
+    "medium": 0.08,
+    "fast": 0.03,
+}
+anim_sleep = speed_map[speed_label]
 
 params = {
     "sim_time": sim_time,
@@ -418,6 +427,43 @@ def plot_single_run(df, title_prefix=""):
     plt.tight_layout()
     return fig
 
+def plot_time_series_progress(df, upto_idx, title_prefix=""):
+    sub = df.iloc[:upto_idx+1]
+
+    fig, axs = plt.subplots(2, 2, figsize=(13, 8), sharex=True)
+
+    axs[0, 0].plot(sub["t"], sub["q"], label="q")
+    axs[0, 0].plot(sub["t"], sub["z"], label="z")
+    axs[0, 0].axhline(params["x_critic_for_beta"], linestyle="--", color="gray", label=r"$q_c$")
+    axs[0, 0].axhline(params["x_star"], linestyle=":", color="black", label=r"$q^\star$")
+    axs[0, 0].set_title("Aggregate states")
+    axs[0, 0].legend()
+    axs[0, 0].grid(True)
+
+    axs[0, 1].plot(sub["t"], sub["u"], label="u(t)")
+    axs[0, 1].plot(sub["t"], sub["r"], label="r(q)")
+    axs[0, 1].set_title("Control and tolerance ratio")
+    axs[0, 1].legend()
+    axs[0, 1].grid(True)
+
+    axs[1, 0].plot(sub["t"], sub["fairness_gap"], label=r"$|\phi_1-\phi_2|$")
+    axs[1, 0].plot(sub["t"], sub["phi1"], label=r"$\phi_1$")
+    axs[1, 0].plot(sub["t"], sub["phi2"], label=r"$\phi_2$")
+    axs[1, 0].set_title("Fairness proxy")
+    axs[1, 0].legend()
+    axs[1, 0].grid(True)
+
+    axs[1, 1].plot(sub["t"], sub["revenue_cum"], label="cum revenue proxy")
+    axs[1, 1].plot(sub["t"], sub["beta"], label=r"$\beta(q)$")
+    axs[1, 1].plot(sub["t"], sub["alpha"], label=r"$\alpha(z,q,u)$")
+    axs[1, 1].set_title("Flow and revenue")
+    axs[1, 1].legend()
+    axs[1, 1].grid(True)
+
+    fig.suptitle(title_prefix, fontsize=15)
+    plt.tight_layout()
+    return fig
+
 def plot_classwise(df, title_prefix=""):
     fig, axs = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
 
@@ -466,8 +512,8 @@ def plot_policy_comparison(results):
     return fig
 
 def vector_field_plot(policy_name, p, mix1=0.7, df=None, frame_idx=None):
-    z_vals = np.linspace(0.0, 3.0, 24)
-    q_vals = np.linspace(0.0, p["x_max"] * 1.2, 24)
+    z_vals = np.linspace(0.0, 3.0, 40)
+    q_vals = np.linspace(0.0, p["x_max"] * 1.2, 40)
     Z, Q = np.meshgrid(z_vals, q_vals)
     U = np.zeros_like(Z)
     V = np.zeros_like(Q)
@@ -488,12 +534,10 @@ def vector_field_plot(policy_name, p, mix1=0.7, df=None, frame_idx=None):
             U[i, j] = zdot
             V[i, j] = qdot
 
-    speed = np.sqrt(U**2 + V**2) + 1e-8
-    U_n = U / speed
-    V_n = V / speed
+    speed = np.sqrt(U**2 + V**2)
 
     fig, ax = plt.subplots(figsize=(8, 6))
-    ax.quiver(Z, Q, U_n, V_n, speed, alpha=0.8)
+    ax.streamplot(Z, Q, U, V, color=speed, density=1.2, linewidth=1.0, cmap="viridis")
     ax.axhline(p["x_critic_for_beta"], linestyle="--", color="gray", label=r"$q_c$")
     ax.axhline(p["x_star"], linestyle=":", color="black", label=r"$q^\star$")
     ax.set_xlabel("z = z1 + z2")
@@ -506,6 +550,10 @@ def vector_field_plot(policy_name, p, mix1=0.7, df=None, frame_idx=None):
             frame_idx = int(np.clip(frame_idx, 0, len(df) - 1))
             ax.scatter(df["z"].iloc[frame_idx], df["q"].iloc[frame_idx],
                        color="black", s=80, zorder=5, label="current point")
+        zmax = min(max(df["z"].max() * 1.1, 3.0), 20.0)
+        qmax = max(df["q"].max() * 1.1, p["x_max"] * 1.2)
+        ax.set_xlim(0, zmax)
+        ax.set_ylim(0, qmax)
 
     ax.legend()
     ax.grid(True)
@@ -585,7 +633,17 @@ with tab1:
     c3.metric("Mean fairness gap", f"{df['fairness_gap'].mean():.3f}")
     c4.metric("Final revenue proxy", f"{df['revenue_cum'].iloc[-1]:.2f}")
 
-    st.pyplot(plot_single_run(df, title_prefix=f"Policy = {policy_mode} | Mode = {sim_mode}"))
+    if animate:
+        ts_placeholder = st.empty()
+        frame_indices = np.linspace(5, len(df)-1, 80).astype(int)
+        for idx in frame_indices:
+            fig = plot_time_series_progress(df, idx, title_prefix=f"Policy = {policy_mode} | Mode = {sim_mode}")
+            ts_placeholder.pyplot(fig)
+            plt.close(fig)
+            time.sleep(anim_sleep)
+    else:
+        st.pyplot(plot_single_run(df, title_prefix=f"Policy = {policy_mode} | Mode = {sim_mode}"))
+
     st.pyplot(plot_classwise(df, title_prefix=f"Policy = {policy_mode}"))
 
 with tab2:
@@ -614,11 +672,23 @@ with tab3:
     mix1 = st.slider("Assumed class-1 share in reduced phase portrait", 0.1, 0.9, 0.7, 0.05)
 
     df_phase = run_policy(policy_mode, params)
-    frame_idx = 0
-    if play_slider:
-        frame_idx = st.slider("Time index for moving point", 0, len(df_phase) - 1, min(20, len(df_phase) - 1), 1)
 
-    st.pyplot(vector_field_plot(policy_mode, params, mix1=mix1, df=df_phase, frame_idx=frame_idx))
+    if animate:
+        phase_placeholder = st.empty()
+        n_frames = len(df_phase)
+        frame_indices = np.linspace(0, n_frames - 1, 60).astype(int)
+
+        for idx in frame_indices:
+            fig = vector_field_plot(policy_mode, params, mix1=mix1, df=df_phase, frame_idx=idx)
+            phase_placeholder.pyplot(fig)
+            plt.close(fig)
+            time.sleep(anim_sleep)
+    else:
+        frame_idx = 0
+        if play_slider:
+            frame_idx = st.slider("Time index for moving point", 0, len(df_phase) - 1, min(20, len(df_phase) - 1), 1)
+
+        st.pyplot(vector_field_plot(policy_mode, params, mix1=mix1, df=df_phase, frame_idx=frame_idx))
 
     st.markdown("### Suggested interpretation")
     st.markdown(r"""
